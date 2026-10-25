@@ -27,8 +27,8 @@ local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.Keyboar
 --   [18193096685] = [[ loadstring(game:HttpGet("https://example.com/dawn.lua"))() ]],
 ----------------------------------------------------
 local GAME_SCRIPTS = {
-	[18193096685] = "",
-	[107662894394089] = "",
+	[18193096685] = "https://raw.githubusercontent.com/vexianja-ai/LunarMenuED/refs/heads/main/Unobff",
+	[107662894394089] = "https://raw.githubusercontent.com/vexianja-ai/LunarMenuED/refs/heads/main/Unobff",
 }
 
 -- used if a card's place has no entry in GAME_SCRIPTS
