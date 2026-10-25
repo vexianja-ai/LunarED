@@ -1,0 +1,430 @@
+--[[
+	LUNAR LAUNCHER — v1
+	+ same visual style as the menu; colors are pulled from your saved LunarMenu config file
+	+ single page, minimize button, draggable title bar
+	+ no loading screen — the panel tweens in (scale + slide + fade)
+	+ "Available Games" header; cards for the games that match this PlaceId
+	+ clicking a card tweens the UI out, deletes it, then runs that game's loadstring
+	+ <<< fill in GAME_SCRIPTS at the top with your loadstrings >>>
+]]--
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+----------------------------------------------------
+-- FILL THESE IN LATER  <<<
+-- Keyed by PlaceId. When a card is clicked, the matching entry runs.
+-- Example:
+--   [18193096685] = [[ loadstring(game:HttpGet("https://example.com/dawn.lua"))() ]],
+----------------------------------------------------
+local GAME_SCRIPTS = {
+	[18193096685] = "",
+	[107662894394089] = "",
+}
+
+-- used if a card's place has no entry in GAME_SCRIPTS
+local FALLBACK_SCRIPT = ""
+
+----------------------------------------------------
+-- GAME LIST  (add more entries whenever you want)
+----------------------------------------------------
+local AVAILABLE_GAMES = {
+	{
+		name = "Early Dawn",
+		image = "rbxassetid://72602128762128",
+		ids = { 18193096685, 107662894394089 },
+	},
+}
+
+----------------------------------------------------
+-- THEME — defaults, overridden by your saved config
+----------------------------------------------------
+local T = {
+	Bg1    = Color3.fromRGB(30, 22, 70),
+	Bg2    = Color3.fromRGB(6, 6, 14),
+	Panel  = Color3.fromRGB(20, 26, 60),
+	PanelD = Color3.fromRGB(13, 17, 40),
+	Hover  = Color3.fromRGB(40, 52, 120),
+	Field  = Color3.fromRGB(15, 18, 35),
+	Stroke = Color3.fromRGB(100, 130, 255),
+	Text   = Color3.fromRGB(230, 240, 255),
+	Dim    = Color3.fromRGB(140, 160, 200),
+	Accent = Color3.fromRGB(120, 170, 255),
+	Accent2= Color3.fromRGB(180, 130, 255),
+	Good   = Color3.fromRGB(80, 240, 130),
+	Bad    = Color3.fromRGB(255, 95, 115),
+	Warn   = Color3.fromRGB(255, 205, 90),
+}
+
+local SAVE_FOLDER = "LunarMenu"
+local SAVE_FILE = SAVE_FOLDER .. "/config.json"
+local FALLBACK_FILE = "LunarMenu_config.json"
+
+local function readSavedTheme()
+	if type(readfile) ~= "function" then return nil end
+	for _, path in ipairs({ SAVE_FILE, FALLBACK_FILE }) do
+		local canRead = true
+		if type(isfile) == "function" then
+			local ok, res = pcall(isfile, path)
+			canRead = ok and res == true
+		end
+		if canRead then
+			local ok, raw = pcall(readfile, path)
+			if ok and raw and raw ~= "" then
+				local decoded, data = pcall(function() return HttpService:JSONDecode(raw) end)
+				if decoded and type(data) == "table" and type(data.theme) == "table" then
+					return data.theme
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local savedTheme = readSavedTheme()
+if savedTheme then
+	for k, rgb in pairs(savedTheme) do
+		if T[k] and type(rgb) == "table" and #rgb >= 3 then
+			T[k] = Color3.new(rgb[1], rgb[2], rgb[3])
+		end
+	end
+end
+
+----------------------------------------------------
+-- UI HELPERS
+----------------------------------------------------
+local LOGO_ID = "rbxassetid://8498174594"
+
+local function make(class, props, parent)
+	local i = Instance.new(class)
+	for k, v in pairs(props or {}) do i[k] = v end
+	if parent then i.Parent = parent end
+	return i
+end
+local function corner(i, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 9); c.Parent = i; return c end
+local function stroke(i, col, tr, th)
+	local s = Instance.new("UIStroke"); s.Color = col or T.Stroke; s.Transparency = tr or 0.45
+	s.Thickness = th or 1; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = i
+	return s
+end
+local function gradient(parent, a, b, rotation)
+	local g = Instance.new("UIGradient")
+	g.Color = ColorSequence.new(a, b)
+	if rotation then g.Rotation = rotation end
+	g.Parent = parent
+	return g
+end
+local function playClick()
+	local s = Instance.new("Sound"); s.SoundId = "rbxassetid://83374956945112"; s.Volume = 0.2
+	s.Parent = SoundService; s:Play(); Debris:AddItem(s, 1)
+end
+local function hover(btn, base, over, str)
+	btn.MouseEnter:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(.2, Enum.EasingStyle.Quad), { BackgroundColor3 = over }):Play()
+		if str then TweenService:Create(str, TweenInfo.new(.2), { Color = T.Accent, Transparency = 0.1 }):Play() end
+	end)
+	btn.MouseLeave:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(.22, Enum.EasingStyle.Quad), { BackgroundColor3 = base }):Play()
+		if str then TweenService:Create(str, TweenInfo.new(.22), { Color = T.Stroke, Transparency = 0.45 }):Play() end
+	end)
+end
+local function ripple(btn)
+	local mp = UserInputService:GetMouseLocation()
+	local px = mp.X - btn.AbsolutePosition.X
+	local py = mp.Y - btn.AbsolutePosition.Y
+	local size = math.max(btn.AbsoluteSize.X, btn.AbsoluteSize.Y) * 1.6
+	local r = make("Frame", {
+		Size = UDim2.new(0, 0, 0, 0), AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, px, 0, py),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0.75, BorderSizePixel = 0, ZIndex = 2,
+	}, btn)
+	corner(r, 999)
+	TweenService:Create(r, TweenInfo.new(0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+		Size = UDim2.new(0, size, 0, size), BackgroundTransparency = 1
+	}):Play()
+	Debris:AddItem(r, 0.5)
+end
+
+----------------------------------------------------
+-- WHICH GAMES ARE AVAILABLE HERE
+----------------------------------------------------
+local matches = {}
+for _, g in ipairs(AVAILABLE_GAMES) do
+	for _, id in ipairs(g.ids) do
+		if id == game.PlaceId then
+			table.insert(matches, { name = g.name, image = g.image, placeId = id })
+			break
+		end
+	end
+end
+
+----------------------------------------------------
+-- BUILD
+----------------------------------------------------
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+local old = playerGui:FindFirstChild("LunarLauncher"); if old then old:Destroy() end
+
+local sg = make("ScreenGui", { Name = "LunarLauncher", ResetOnSpawn = false,
+	IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 50 }, playerGui)
+
+local PANEL_W, PANEL_H = 340, 286
+local MINI_W, MINI_H = 200, 44
+local START_POS = UDim2.new(0.5, 0, 0.5, 40)
+local TARGET_POS = UDim2.new(0.5, 0, 0.5, 0)
+
+-- holder carries the drag / scale / position so the glow can sit outside the clip
+local holder = make("Frame", { Size = UDim2.fromOffset(PANEL_W, PANEL_H), AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = START_POS, BackgroundTransparency = 1, ZIndex = 1 }, sg)
+
+local scale = Instance.new("UIScale"); scale.Scale = 0.88; scale.Parent = holder
+
+local glow = make("Frame", { Size = UDim2.new(1, 22, 1, 22), AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, 0), BackgroundColor3 = T.Accent,
+	BackgroundTransparency = 0.9, BorderSizePixel = 0, ZIndex = 1 }, holder)
+corner(glow, 24)
+
+-- the panel itself (CanvasGroup lets us fade everything at once)
+local canvas = make("CanvasGroup", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = T.Bg2,
+	BorderSizePixel = 0, ClipsDescendants = true, GroupTransparency = 1, ZIndex = 2 }, holder)
+corner(canvas, 14)
+local canvasStroke = stroke(canvas, T.Accent, 0.3, 1.5)
+gradient(canvas, T.Bg1, T.Bg2, 135)
+
+-- slow sheen sweep
+local sheenHolder = make("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 2 }, canvas)
+corner(sheenHolder, 14)
+local sheen = make("Frame", { Size = UDim2.new(0, 130, 1.7, 0), Position = UDim2.new(0, -170, -0.35, 0),
+	BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.92, BorderSizePixel = 0, Rotation = 18, ZIndex = 2 }, sheenHolder)
+make("UIGradient", { Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0.35), NumberSequenceKeypoint.new(1, 1)
+}) }, sheen)
+
+-- corner ticks, same flourish as the menu
+for _, pos in ipairs({ UDim2.new(0, 6, 0, 50), UDim2.new(1, -22, 0, 50) }) do
+	local b = make("Frame", { Size = UDim2.new(0, 16, 0, 16), Position = pos, BackgroundTransparency = 1, ZIndex = 4 }, canvas)
+	stroke(b, T.Accent, 0.35, 2)
+end
+
+----------------------------------------------------
+-- TITLE BAR
+----------------------------------------------------
+local titleBar = make("Frame", { Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1, ZIndex = 5 }, canvas)
+
+local titleLogo = make("ImageLabel", { Size = UDim2.new(0, 24, 0, 24), Position = UDim2.new(0, 14, 0.5, -12),
+	BackgroundTransparency = 1, Image = LOGO_ID, ZIndex = 5 }, titleBar)
+
+local titleLbl = make("TextLabel", { Size = UDim2.new(1, -108, 1, 0), Position = UDim2.new(0, 46, 0, 0),
+	BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = "Lunar", TextColor3 = T.Text,
+	TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 5 }, titleBar)
+gradient(titleLbl, T.Accent, T.Accent2)
+
+local minBtn = make("TextButton", { Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(1, -62, 0.5, -13),
+	BackgroundColor3 = Color3.fromRGB(30, 40, 85), Font = Enum.Font.GothamBold, Text = "-",
+	TextColor3 = T.Text, TextSize = 15, AutoButtonColor = false, ZIndex = 6 }, titleBar)
+corner(minBtn, 8); stroke(minBtn, T.Stroke, 0.4); hover(minBtn, Color3.fromRGB(30, 40, 85), T.Hover)
+
+local closeBtn = make("TextButton", { Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(1, -32, 0.5, -13),
+	BackgroundColor3 = Color3.fromRGB(70, 40, 55), Font = Enum.Font.GothamBold, Text = "✕",
+	TextColor3 = T.Text, TextSize = 12, AutoButtonColor = false, ZIndex = 6 }, titleBar)
+corner(closeBtn, 8); stroke(closeBtn, T.Bad, 0.5); hover(closeBtn, Color3.fromRGB(70, 40, 55), Color3.fromRGB(150, 55, 70))
+
+make("Frame", { Size = UDim2.new(1, -20, 0, 1), Position = UDim2.new(0, 10, 0, 44),
+	BackgroundColor3 = T.Stroke, BackgroundTransparency = 0.78, BorderSizePixel = 0, ZIndex = 5 }, canvas)
+
+----------------------------------------------------
+-- BODY
+----------------------------------------------------
+local body = make("Frame", { Size = UDim2.new(1, -24, 1, -56), Position = UDim2.new(0, 12, 0, 50),
+	BackgroundTransparency = 1, ZIndex = 5 }, canvas)
+
+local headerRow = make("Frame", { Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1 }, body)
+local headerBar = make("Frame", { Size = UDim2.new(0, 3, 0, 11), Position = UDim2.new(0, 0, 0, 3),
+	BackgroundColor3 = T.Accent, BorderSizePixel = 0 }, headerRow)
+corner(headerBar, 99); gradient(headerBar, T.Accent, T.Accent2)
+local headerLbl = make("TextLabel", { Size = UDim2.new(1, -12, 1, 0), Position = UDim2.new(0, 11, 0, 0),
+	BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
+	Text = (#matches > 0) and "AVAILABLE GAMES" or "NO AVAILABLE GAMES",
+	TextColor3 = T.Dim, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left }, headerRow)
+
+local list = make("ScrollingFrame", { Size = UDim2.new(1, 0, 1, -26), Position = UDim2.new(0, 0, 0, 26),
+	BackgroundTransparency = 1, BorderSizePixel = 0, CanvasSize = UDim2.new(0, 0, 0, 0),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3,
+	ScrollBarImageColor3 = T.Accent }, body)
+make("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }, list)
+
+----------------------------------------------------
+-- LAUNCH / CLOSE
+----------------------------------------------------
+local closing = false
+local function tweenOut()
+	if closing then return end
+	closing = true
+	local ti = TweenInfo.new(0.36, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	TweenService:Create(canvas, ti, { GroupTransparency = 1 }):Play()
+	TweenService:Create(glow, ti, { BackgroundTransparency = 1 }):Play()
+	TweenService:Create(canvasStroke, ti, { Transparency = 1 }):Play()
+	TweenService:Create(scale, ti, { Scale = 0.9 }):Play()
+	local move = TweenService:Create(holder, ti, { Position = TARGET_POS + UDim2.fromOffset(0, 20) })
+	move:Play()
+	move.Completed:Wait()
+	if sg.Parent then sg:Destroy() end
+end
+
+local function runScript(src)
+	if type(src) ~= "string" or src == "" then return end
+	if type(loadstring) ~= "function" then warn("[Lunar] loadstring unavailable"); return end
+	local compiled, fn = pcall(loadstring, src)
+	if not compiled or type(fn) ~= "function" then warn("[Lunar] script failed to compile"); return end
+	local ok, err = pcall(fn)
+	if not ok then warn("[Lunar] script error: " .. tostring(err)) end
+end
+
+local function launch(entry)
+	playClick()
+	tweenOut()
+	local src = GAME_SCRIPTS[entry.placeId] or FALLBACK_SCRIPT
+	if src and src ~= "" then
+		task.spawn(function() runScript(src) end)
+	else
+		warn("[Lunar] no script set for " .. entry.name .. " (PlaceId " .. tostring(entry.placeId) .. ")")
+	end
+end
+
+----------------------------------------------------
+-- CARDS
+----------------------------------------------------
+if #matches > 0 then
+	for idx, entry in ipairs(matches) do
+		local card = make("TextButton", { Size = UDim2.new(1, 0, 0, 168), BackgroundColor3 = T.Panel,
+			Text = "", AutoButtonColor = false, ClipsDescendants = true, LayoutOrder = idx }, list)
+		corner(card, 10); local cs = stroke(card, T.Stroke, 0.5)
+		hover(card, T.Panel, T.Hover, cs)
+		card.MouseButton1Down:Connect(function() ripple(card) end)
+		card.MouseButton1Click:Connect(function() launch(entry) end)
+
+		local imgHolder = make("Frame", { Size = UDim2.new(1, -14, 0, 124), Position = UDim2.new(0, 7, 0, 7),
+			BackgroundColor3 = Color3.fromRGB(10, 12, 20), BorderSizePixel = 0, ClipsDescendants = true }, card)
+		corner(imgHolder, 8)
+		local img = make("ImageLabel", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+			Image = entry.image, ScaleType = Enum.ScaleType.Crop }, imgHolder)
+		corner(img, 8)
+		make("Frame", { Size = UDim2.new(1, 0, 0, 40), Position = UDim2.new(0, 0, 1, -40),
+			BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.35, BorderSizePixel = 0 }, imgHolder)
+
+		local nameLbl = make("TextLabel", { Size = UDim2.new(1, -20, 0, 20), Position = UDim2.new(0, 10, 0, 136),
+			BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = entry.name,
+			TextColor3 = T.Text, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left }, card)
+
+		local subLbl = make("TextLabel", { Size = UDim2.new(1, -20, 0, 14), Position = UDim2.new(0, 10, 0, 152),
+			BackgroundTransparency = 1, Font = Enum.Font.GothamMedium, Text = "Tap to launch",
+			TextColor3 = T.Dim, TextSize = 9, TextXAlignment = Enum.TextXAlignment.Left }, card)
+
+		-- stagger the cards in
+		card.Position = UDim2.new(0, 24, 0, 0)
+		card.BackgroundTransparency = 0.6
+		task.delay(0.18 + idx * 0.06, function()
+			if not card.Parent then return end
+			TweenService:Create(card, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+				Position = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 0
+			}):Play()
+		end)
+	end
+else
+	local empty = make("Frame", { Size = UDim2.new(1, 0, 0, 44), BackgroundColor3 = T.Panel,
+		BackgroundTransparency = 0.4, BorderSizePixel = 0 }, list)
+	corner(empty, 10); stroke(empty, T.Stroke, 0.6)
+	make("TextLabel", { Size = UDim2.new(1, -20, 1, 0), Position = UDim2.new(0, 12, 0, 0), BackgroundTransparency = 1,
+		Font = Enum.Font.GothamMedium, Text = "This place isn't supported yet.",
+		TextColor3 = T.Dim, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left }, empty)
+end
+
+----------------------------------------------------
+-- MINIMIZE + DRAG
+----------------------------------------------------
+local minimized = false
+minBtn.MouseButton1Click:Connect(function()
+	playClick()
+	minimized = not minimized
+	minBtn.Text = minimized and "+" or "-"
+	body.Visible = not minimized
+	local target = minimized and UDim2.fromOffset(MINI_W, MINI_H) or UDim2.fromOffset(PANEL_W, PANEL_H)
+	TweenService:Create(holder, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = target }):Play()
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+	playClick()
+	tweenOut()
+end)
+
+local dragging, dragStart, startPos = false, nil, nil
+titleBar.InputBegan:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = i.Position
+		startPos = holder.Position
+		i.Changed:Connect(function()
+			if i.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+local dragInput
+UserInputService.InputChanged:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch then
+		dragInput = i
+	end
+end)
+RunService.RenderStepped:Connect(function()
+	if dragging and dragInput and dragStart and startPos then
+		local d = dragInput.Position - dragStart
+		holder.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+	end
+end)
+
+----------------------------------------------------
+-- AMBIENT
+----------------------------------------------------
+task.spawn(function()
+	while sg.Parent do
+		task.wait(4.5)
+		sheen.Position = UDim2.new(0, -170, -0.35, 0)
+		TweenService:Create(sheen, TweenInfo.new(1.7, Enum.EasingStyle.Linear),
+			{ Position = UDim2.new(1, 30, -0.35, 0) }):Play()
+	end
+end)
+task.spawn(function()
+	while sg.Parent do
+		TweenService:Create(glow, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{ BackgroundTransparency = 0.95 }):Play()
+		TweenService:Create(canvasStroke, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{ Transparency = 0.6 }):Play()
+		task.wait(1.8)
+		TweenService:Create(glow, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{ BackgroundTransparency = 0.88 }):Play()
+		TweenService:Create(canvasStroke, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{ Transparency = 0.3 }):Play()
+		task.wait(1.8)
+	end
+end)
+
+----------------------------------------------------
+-- TWEEN IN (no loading screen)
+----------------------------------------------------
+task.spawn(function()
+	task.wait(0.05)
+	TweenService:Create(holder, TweenInfo.new(0.6, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Position = TARGET_POS }):Play()
+	TweenService:Create(scale, TweenInfo.new(0.6, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Scale = 1 }):Play()
+	TweenService:Create(canvas, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ GroupTransparency = 0 }):Play()
+end)
