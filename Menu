@@ -1,5 +1,7 @@
 --[[
-	LUNAR LAUNCHER — v1
+	LUNAR LAUNCHER — v1.1
+	+ FIX: UIGradient was on the CanvasGroup, tinting every child (text went near-black at
+	       the Bg2 end). Background gradient now lives on its own child frame.
 	+ same visual style as the menu; colors are pulled from your saved LunarMenu config file
 	+ single page, minimize button, draggable title bar
 	+ no loading screen — the panel tweens in (scale + slide + fade)
@@ -27,8 +29,8 @@ local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.Keyboar
 --   [18193096685] = [[ loadstring(game:HttpGet("https://example.com/dawn.lua"))() ]],
 ----------------------------------------------------
 local GAME_SCRIPTS = {
-	[18193096685] = "https://raw.githubusercontent.com/vexianja-ai/LunarMenuED/refs/heads/main/Unobff",
-	[107662894394089] = "https://raw.githubusercontent.com/vexianja-ai/LunarMenuED/refs/heads/main/Unobff",
+	[18193096685] = [[ loadstring(game:HttpGet("https://raw.githubusercontent.com/vexianja-ai/LunarMenuED/refs/heads/main/Unobff"))() ]],
+	[107662894394089] = [[ loadstring(game:HttpGet("https://raw.githubusercontent.com/vexianja-ai/LunarMenuED/refs/heads/main/Unobff"))() ]]
 }
 
 -- used if a card's place has no entry in GAME_SCRIPTS
@@ -116,7 +118,8 @@ local function stroke(i, col, tr, th)
 	s.Thickness = th or 1; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = i
 	return s
 end
-local function gradient(parent, a, b, rotation)
+-- background-only gradient: always parent it to a frame that has nothing but a background
+local function bgGradient(parent, a, b, rotation)
 	local g = Instance.new("UIGradient")
 	g.Color = ColorSequence.new(a, b)
 	if rotation then g.Rotation = rotation end
@@ -182,7 +185,7 @@ local MINI_W, MINI_H = 200, 44
 local START_POS = UDim2.new(0.5, 0, 0.5, 40)
 local TARGET_POS = UDim2.new(0.5, 0, 0.5, 0)
 
--- holder carries the drag / scale / position so the glow can sit outside the clip
+-- holder carries drag / scale / position so the glow can sit outside the clip
 local holder = make("Frame", { Size = UDim2.fromOffset(PANEL_W, PANEL_H), AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = START_POS, BackgroundTransparency = 1, ZIndex = 1 }, sg)
 
@@ -193,15 +196,22 @@ local glow = make("Frame", { Size = UDim2.new(1, 22, 1, 22), AnchorPoint = Vecto
 	BackgroundTransparency = 0.9, BorderSizePixel = 0, ZIndex = 1 }, holder)
 corner(glow, 24)
 
--- the panel itself (CanvasGroup lets us fade everything at once)
-local canvas = make("CanvasGroup", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = T.Bg2,
+-- panel: transparent CanvasGroup (so we can fade everything at once).
+-- NOTE: no gradient on this — a UIGradient on a CanvasGroup tints the children too.
+local canvas = make("CanvasGroup", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
 	BorderSizePixel = 0, ClipsDescendants = true, GroupTransparency = 1, ZIndex = 2 }, holder)
 corner(canvas, 14)
 local canvasStroke = stroke(canvas, T.Accent, 0.3, 1.5)
-gradient(canvas, T.Bg1, T.Bg2, 135)
 
--- slow sheen sweep
-local sheenHolder = make("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 2 }, canvas)
+-- background lives on its own frame, gradient goes here
+local panelBg = make("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = T.Bg2,
+	BorderSizePixel = 0, ZIndex = 1 }, canvas)
+corner(panelBg, 14)
+bgGradient(panelBg, T.Bg1, T.Bg2, 135)
+
+-- slow sheen sweep (own frame + own gradient, sits above the background only)
+local sheenHolder = make("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+	ClipsDescendants = true, ZIndex = 2 }, canvas)
 corner(sheenHolder, 14)
 local sheen = make("Frame", { Size = UDim2.new(0, 130, 1.7, 0), Position = UDim2.new(0, -170, -0.35, 0),
 	BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.92, BorderSizePixel = 0, Rotation = 18, ZIndex = 2 }, sheenHolder)
@@ -209,7 +219,7 @@ make("UIGradient", { Transparency = NumberSequence.new({
 	NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0.35), NumberSequenceKeypoint.new(1, 1)
 }) }, sheen)
 
--- corner ticks, same flourish as the menu
+-- corner ticks
 for _, pos in ipairs({ UDim2.new(0, 6, 0, 50), UDim2.new(1, -22, 0, 50) }) do
 	local b = make("Frame", { Size = UDim2.new(0, 16, 0, 16), Position = pos, BackgroundTransparency = 1, ZIndex = 4 }, canvas)
 	stroke(b, T.Accent, 0.35, 2)
@@ -223,10 +233,10 @@ local titleBar = make("Frame", { Size = UDim2.new(1, 0, 0, 44), BackgroundTransp
 local titleLogo = make("ImageLabel", { Size = UDim2.new(0, 24, 0, 24), Position = UDim2.new(0, 14, 0.5, -12),
 	BackgroundTransparency = 1, Image = LOGO_ID, ZIndex = 5 }, titleBar)
 
+-- solid colour, not gradient text — UIGradient does not reliably tint TextLabel text
 local titleLbl = make("TextLabel", { Size = UDim2.new(1, -108, 1, 0), Position = UDim2.new(0, 46, 0, 0),
-	BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = "Lunar", TextColor3 = T.Text,
+	BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = "Lunar", TextColor3 = T.Accent,
 	TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 5 }, titleBar)
-gradient(titleLbl, T.Accent, T.Accent2)
 
 local minBtn = make("TextButton", { Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(1, -62, 0.5, -13),
 	BackgroundColor3 = Color3.fromRGB(30, 40, 85), Font = Enum.Font.GothamBold, Text = "-",
@@ -250,11 +260,11 @@ local body = make("Frame", { Size = UDim2.new(1, -24, 1, -56), Position = UDim2.
 local headerRow = make("Frame", { Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1 }, body)
 local headerBar = make("Frame", { Size = UDim2.new(0, 3, 0, 11), Position = UDim2.new(0, 0, 0, 3),
 	BackgroundColor3 = T.Accent, BorderSizePixel = 0 }, headerRow)
-corner(headerBar, 99); gradient(headerBar, T.Accent, T.Accent2)
+corner(headerBar, 99); bgGradient(headerBar, T.Accent, T.Accent2)
 local headerLbl = make("TextLabel", { Size = UDim2.new(1, -12, 1, 0), Position = UDim2.new(0, 11, 0, 0),
 	BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
 	Text = (#matches > 0) and "AVAILABLE GAMES" or "NO AVAILABLE GAMES",
-	TextColor3 = T.Dim, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left }, headerRow)
+	TextColor3 = T.Text, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left }, headerRow)
 
 local list = make("ScrollingFrame", { Size = UDim2.new(1, 0, 1, -26), Position = UDim2.new(0, 0, 0, 26),
 	BackgroundTransparency = 1, BorderSizePixel = 0, CanvasSize = UDim2.new(0, 0, 0, 0),
@@ -329,7 +339,6 @@ if #matches > 0 then
 			BackgroundTransparency = 1, Font = Enum.Font.GothamMedium, Text = "Tap to launch",
 			TextColor3 = T.Dim, TextSize = 9, TextXAlignment = Enum.TextXAlignment.Left }, card)
 
-		-- stagger the cards in
 		card.Position = UDim2.new(0, 24, 0, 0)
 		card.BackgroundTransparency = 0.6
 		task.delay(0.18 + idx * 0.06, function()
